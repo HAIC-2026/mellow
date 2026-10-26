@@ -1,0 +1,48 @@
+.md-preview {
+  font-family: system-ui, -apple-system, sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+  color: #1f2328;
+}
+
+.md-preview h1,
+.md-preview h2,
+.md-preview h3 {
+  border-bottom: 1px solid #d0d7de;
+  padding-bottom: 4px;
+  margin: 16px 0 8px;
+}
+
+.md-preview table {
+  border-collapse: collapse;
+  margin: 12px 0;
+  font-size: 13px;
+  display: block;
+  overflow-x: auto;
+  max-width: 100%;
+}
+
+.md-preview th,
+.md-preview td {
+  border: 1px solid #d0d7de;
+  padding: 6px 10px;
+  text-align: left;
+  vertical-align: top;
+  white-space: nowrap;
+}
+
+.md-preview th {
+  background: #f6f8fa;
+  font-weight: 600;
+}
+
+.md-preview tbody tr:nth-child(even) {
+  background: #fbfcfd;
+}
+
+.md-preview code {
+  background: #f6f8fa;
+  padding: 2px 4px;
+  border-radius: 4px;
+  font-family: ui-monospace, monospace;
+}
