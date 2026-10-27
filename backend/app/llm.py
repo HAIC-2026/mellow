@@ -71,13 +71,17 @@ def embed(texts: list[str], task_type: str) -> list[list[float]]:
     # task_type: RETRIEVAL_DOCUMENT for indexed chunks, RETRIEVAL_QUERY for questions.
     client = genai.Client()
     model = os.environ.get("GEMINI_EMBED_MODEL", DEFAULT_EMBED_MODEL)
+    # Unset means the model's full size. Smaller sizes are truncated (Matryoshka) and not unit length;
+    # vector search divides by the norms, so that is fine.
+    dim = os.environ.get("GEMINI_EMBED_DIM")
+    config = types.EmbedContentConfig(task_type=task_type, output_dimensionality=int(dim) if dim else None)
     vectors: list[list[float]] = []
     for batch in _batches(texts):
         response = _with_rate_limit_retry(
             lambda: client.models.embed_content(
                 model=model,
                 contents=batch,
-                config=types.EmbedContentConfig(task_type=task_type),
+                config=config,
             )
         )
         vectors.extend(e.values or [] for e in response.embeddings or [])
