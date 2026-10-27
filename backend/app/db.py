@@ -49,8 +49,8 @@ CREATE TABLE IF NOT EXISTS spans (
 CREATE INDEX IF NOT EXISTS spans_doc_id ON spans (doc_id);
 CREATE INDEX IF NOT EXISTS spans_chunk_id ON spans (chunk_id);
 
--- rowid = chunks.id
-CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(text);
+-- rowid = chunks.id. Porter stemming so "agency" matches "agencies".
+CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(text, tokenize='porter unicode61');
 """
 
 
@@ -64,6 +64,12 @@ def init_db() -> None:
             conn.execute("ALTER TABLE documents ADD COLUMN source TEXT")
         if "indexed_at" not in columns:
             conn.execute("ALTER TABLE documents ADD COLUMN indexed_at TEXT")
+        # Older databases have chunks_fts without stemming. Rebuild it from chunks; no re-embedding needed.
+        fts_sql = conn.execute("SELECT sql FROM sqlite_master WHERE name = 'chunks_fts'").fetchone()["sql"]
+        if "porter" not in fts_sql:
+            conn.execute("DROP TABLE chunks_fts")
+            conn.execute("CREATE VIRTUAL TABLE chunks_fts USING fts5(text, tokenize='porter unicode61')")
+            conn.execute("INSERT INTO chunks_fts (rowid, text) SELECT id, text FROM chunks")
 
 
 @contextmanager

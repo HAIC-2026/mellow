@@ -12,6 +12,12 @@ log = logging.getLogger(__name__)
 CANDIDATES = 20
 RRF_K = 60
 NOT_FOUND = "The saved documents do not cover this question."
+# Question words that only add noise matches to the keyword search.
+STOPWORDS = frozenset(
+    "a an and are as at be by can could do does for from had has have how in is its of on or "
+    "should that the their there these this those to was we were what when where which who whom "
+    "why will with would you your".split()
+)
 
 
 def ask(question: str, top_k: int = 8, debug: bool = False) -> dict[str, Any]:
@@ -79,6 +85,8 @@ def _debug_chunks(conn: Any, ranked: list[int], keyword: list[int], vector: list
 
 def _keyword_search(conn: Any, question: str) -> list[int]:
     tokens = [t for t in re.findall(r"\w+", question.lower()) if len(t) > 1]
+    # Fall back to all tokens when the question is only stopwords.
+    tokens = [t for t in tokens if t not in STOPWORDS] or tokens
     if not tokens:
         return []
     match = " OR ".join(f'"{t}"' for t in dict.fromkeys(tokens))
