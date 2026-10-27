@@ -12,10 +12,41 @@ function formatJson(raw: string | null): string {
   }
 }
 
+// Splits a segment's span ids into runs of neighbouring spans. The indexer inserts spans
+// in document order, so consecutive ids under the same doc, page and heading are adjacent
+// in the source.
+function groupCitations(ids: number[], citations: Record<string, Citation>): Citation[][] {
+  const groups: Citation[][] = []
+  for (const id of [...ids].sort((a, b) => a - b)) {
+    const c = citations[id]
+    const prev = groups.at(-1)?.at(-1)
+    if (
+      prev &&
+      c.span_id === prev.span_id + 1 &&
+      c.doc_id === prev.doc_id &&
+      c.page_number === prev.page_number &&
+      c.heading_path === prev.heading_path
+    ) {
+      groups.at(-1)!.push(c)
+    } else {
+      groups.push([c])
+    }
+  }
+  return groups
+}
+
+function groupKey(group: Citation[]): string {
+  return group.map((c) => c.span_id).join(',')
+}
+
+function quote(group: Citation[]): string {
+  return group.map((c) => c.text).join(' ')
+}
+
 export default function AskPage() {
   const [question, setQuestion] = useState('')
   const [result, setResult] = useState<AskResponse | null>(null)
-  const [selected, setSelected] = useState<Citation | null>(null)
+  const [selected, setSelected] = useState<Citation[] | null>(null)
   const [loading, setLoading] = useState(false)
   const [debug, setDebug] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -35,11 +66,12 @@ export default function AskPage() {
     }
   }
 
-  // Number citations by first appearance so chips read [1], [2], ...
-  const numbers = new Map<number, number>()
-  result?.answer_segments.forEach((seg) =>
-    seg.citations.forEach((id) => numbers.has(id) || numbers.set(id, numbers.size + 1)),
-  )
+  // One chip per group of consecutive spans; number groups by first appearance so chips read [1], [2], ...
+  const segmentGroups = result?.answer_segments.map((seg) => groupCitations(seg.citations, result.citations)) ?? []
+  const groups = new Map<string, Citation[]>()
+  segmentGroups.flat().forEach((g) => groups.has(groupKey(g)) || groups.set(groupKey(g), g))
+  const numbers = new Map([...groups.keys()].map((key, i) => [key, i + 1]))
+  const selectedKey = selected && groupKey(selected)
 
   return (
     <div>
@@ -66,33 +98,30 @@ export default function AskPage() {
             {result.answer_segments.map((seg, i) => (
               <p key={i}>
                 {seg.text}
-                {seg.citations.map((id) => {
-                  const c = result.citations[id]
+                {segmentGroups[i].map((g) => {
+                  const key = groupKey(g)
                   return (
                     <button
-                      key={id}
+                      key={key}
                       type="button"
-                      className={`cite-chip${selected?.span_id === id ? ' active' : ''}`}
-                      title={`${c.original_filename} › ${c.heading_path || c.page_title}\n“${c.text}”`}
-                      onClick={() => setSelected(c)}
+                      className={`cite-chip${selectedKey === key ? ' active' : ''}`}
+                      title={`${g[0].original_filename} › ${g[0].heading_path || g[0].page_title}\n“${quote(g)}”`}
+                      onClick={() => setSelected(g)}
                     >
-                      {numbers.get(id)}
+                      {numbers.get(key)}
                     </button>
                   )
                 })}
               </p>
             ))}
-            {numbers.size > 0 && (
+            {groups.size > 0 && (
               <ol className="cite-list">
-                {[...numbers.keys()].map((id) => {
-                  const c = result.citations[id]
-                  return (
-                    <li key={id} onClick={() => setSelected(c)}>
-                      <strong>{c.original_filename}</strong> › {c.heading_path || c.page_title}
-                      <div className="cite-quote">“{c.text}”</div>
-                    </li>
-                  )
-                })}
+                {[...groups].map(([key, g]) => (
+                  <li key={key} onClick={() => setSelected(g)}>
+                    <strong>{g[0].original_filename}</strong> › {g[0].heading_path || g[0].page_title}
+                    <div className="cite-quote">“{quote(g)}”</div>
+                  </li>
+                ))}
               </ol>
             )}
             {result.debug && (
@@ -122,7 +151,7 @@ export default function AskPage() {
           </div>
           {selected && (
             <div className="ask-source">
-              <SourceViewer key={selected.span_id} citation={selected} />
+              <SourceViewer key={selectedKey} citations={selected} />
             </div>
           )}
         </div>

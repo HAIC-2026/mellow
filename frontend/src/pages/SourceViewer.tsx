@@ -4,7 +4,8 @@ import remarkGfm from 'remark-gfm'
 import { getDocument, type Citation, type DocumentDetail } from '../api/client'
 
 interface Props {
-  citation: Citation
+  // Adjacent spans from one page and heading, in source order.
+  citations: Citation[]
 }
 
 interface HastNode {
@@ -55,21 +56,24 @@ function rehypeCite(range: { start: number; end: number }) {
   }
 }
 
-export default function SourceViewer({ citation }: Props) {
+export default function SourceViewer({ citations }: Props) {
   const [doc, setDoc] = useState<DocumentDetail | null>(null)
   const [error, setError] = useState<string | null>(null)
   const ref = useRef<HTMLDivElement>(null)
+  const citation = citations[0]
+  const range = { start: citation.start, end: citations[citations.length - 1].end }
 
   useEffect(() => {
     getDocument(citation.doc_id).then(setDoc).catch((e: Error) => setError(e.message))
   }, [citation.doc_id])
 
   const page = doc?.pages.find((p) => p.number === citation.page_number)
-  const stale = page !== undefined && page.markdown.slice(citation.start, citation.end) !== citation.text
+  // Check each span on its own: the text between spans is not stored.
+  const stale = page !== undefined && citations.some((c) => page.markdown.slice(c.start, c.end) !== c.text)
 
   useEffect(() => {
     ref.current?.querySelector('mark.cite, tr.cite-row')?.scrollIntoView({ block: 'center' })
-  }, [page, citation])
+  }, [page, citations])
 
   return (
     <div>
@@ -82,7 +86,7 @@ export default function SourceViewer({ citation }: Props) {
       {stale && <p role="alert">This document changed since the answer was generated; the highlight may be off.</p>}
       {page && (
         <div ref={ref} className="md-preview source-viewer">
-          <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[[rehypeCite, citation]]}>
+          <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[[rehypeCite, range]]}>
             {page.markdown}
           </ReactMarkdown>
         </div>
