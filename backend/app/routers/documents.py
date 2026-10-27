@@ -13,6 +13,7 @@ from app.db import connect
 from app.llm import edit_sheet
 from app.parsers.base import Page
 from app.parsers.registry import MANUAL_PARSER, PARSERS, get_parser
+from app.rag.indexer import index_document
 from app.storage import new_doc_id, sha256_of
 
 router = APIRouter(prefix="/api")
@@ -212,7 +213,12 @@ def save_document(doc_id: str, body: SaveRequest) -> dict[str, Any]:
             "UPDATE documents SET final_md_path = ?, status = 'saved', saved_at = ? WHERE id = ?",
             (final_rel, saved_at, doc_id),
         )
-    return _payload(_fetch_row(doc_id), pages)
+    # The save is durable at this point; an indexing failure only degrades search.
+    try:
+        index_warning = index_document(doc_id, pages)
+    except Exception as exc:
+        index_warning = f"indexing failed: {exc}"
+    return {**_payload(_fetch_row(doc_id), pages), "index_warning": index_warning}
 
 
 @router.post("/documents/{doc_id}/llm-edit")

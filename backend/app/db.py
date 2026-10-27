@@ -20,6 +20,37 @@ CREATE TABLE IF NOT EXISTS documents (
   saved_at           TEXT,
   source             TEXT
 );
+
+-- Retrieval index over saved documents. Rebuilt per document on every save.
+CREATE TABLE IF NOT EXISTS chunks (
+  id            INTEGER PRIMARY KEY,
+  doc_id        TEXT NOT NULL,
+  page_number   INTEGER NOT NULL,
+  page_title    TEXT NOT NULL,
+  heading_path  TEXT NOT NULL,
+  text          TEXT NOT NULL,
+  embedding     BLOB
+);
+CREATE INDEX IF NOT EXISTS chunks_doc_id ON chunks (doc_id);
+
+-- Citable units. page markdown[start:end] == text.
+CREATE TABLE IF NOT EXISTS spans (
+  id            INTEGER PRIMARY KEY,
+  chunk_id      INTEGER NOT NULL,
+  doc_id        TEXT NOT NULL,
+  page_number   INTEGER NOT NULL,
+  kind          TEXT NOT NULL,
+  start         INTEGER NOT NULL,
+  end           INTEGER NOT NULL,
+  text          TEXT NOT NULL,
+  llm_text      TEXT NOT NULL,
+  heading_path  TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS spans_doc_id ON spans (doc_id);
+CREATE INDEX IF NOT EXISTS spans_chunk_id ON spans (chunk_id);
+
+-- rowid = chunks.id
+CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(text);
 """
 
 
@@ -31,6 +62,8 @@ def init_db() -> None:
         columns = {row["name"] for row in conn.execute("PRAGMA table_info(documents)")}
         if "source" not in columns:
             conn.execute("ALTER TABLE documents ADD COLUMN source TEXT")
+        if "indexed_at" not in columns:
+            conn.execute("ALTER TABLE documents ADD COLUMN indexed_at TEXT")
 
 
 @contextmanager

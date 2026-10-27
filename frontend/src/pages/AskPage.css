@@ -1,0 +1,52 @@
+.ask-layout {
+  display: flex;
+  gap: 24px;
+  align-items: flex-start;
+}
+
+.ask-answer {
+  flex: 1;
+  min-width: 0;
+}
+
+.ask-source {
+  flex: 1;
+  min-width: 0;
+  position: sticky;
+  top: 16px;
+}
+
+.source-viewer {
+  max-height: 75vh;
+  overflow: auto;
+  border: 1px solid #ddd;
+  padding: 12px;
+}
+
+.cite-chip {
+  font-size: 0.75em;
+  padding: 0 6px;
+  margin-left: 4px;
+  vertical-align: super;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.cite-chip.active {
+  background: #ffe066;
+}
+
+.cite-list li {
+  cursor: pointer;
+  margin-bottom: 8px;
+}
+
+.cite-quote {
+  color: #555;
+  font-size: 0.9em;
+}
+
+mark.cite,
+tr.cite-row {
+  background: #ffe066;
+}

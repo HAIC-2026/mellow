@@ -79,6 +79,39 @@ export function llmEditSheet(
   });
 }
 
+export interface Citation {
+  span_id: number;
+  doc_id: string;
+  original_filename: string;
+  page_number: number;
+  page_title: string;
+  heading_path: string;
+  kind: "heading" | "sentence" | "table_row";
+  // Offsets into the page markdown: page.markdown.slice(start, end) === text
+  start: number;
+  end: number;
+  text: string;
+}
+
+export interface AnswerSegment {
+  text: string;
+  citations: number[];
+}
+
+export interface AskResponse {
+  found: boolean;
+  answer_segments: AnswerSegment[];
+  citations: Record<string, Citation>;
+}
+
+export function ask(question: string): Promise<AskResponse> {
+  return request("/api/ask", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ question }),
+  });
+}
+
 export function saveDocument(
   id: string,
   pages: Page[],
