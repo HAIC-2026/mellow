@@ -12,14 +12,14 @@ from app.config import DATA_DIR, MARKDOWN_DIR, UPLOADS_DIR
 from app.db import connect
 from app.llm import edit_sheet
 from app.parsers.base import Page
-from app.parsers.registry import PARSERS, get_parser
+from app.parsers.registry import MANUAL_PARSER, PARSERS, get_parser
 from app.storage import new_doc_id, sha256_of
 
 router = APIRouter(prefix="/api")
 
 COLUMNS = (
     "id, original_filename, extension, parser_name, parser_version, "
-    "status, sha256, uploaded_at, saved_at"
+    "status, sha256, uploaded_at, saved_at, source"
 )
 
 
@@ -31,6 +31,11 @@ class PageModel(BaseModel):
 
 class SaveRequest(BaseModel):
     pages: list[PageModel]
+
+
+class ManualRequest(BaseModel):
+    title: str = "Untitled"
+    source: str | None = None
 
 
 class LlmEditRequest(BaseModel):
@@ -86,6 +91,7 @@ def _payload(row: Any, pages: list[dict[str, Any]]) -> dict[str, Any]:
         "sha256": row["sha256"],
         "uploaded_at": row["uploaded_at"],
         "saved_at": row["saved_at"],
+        "source": row["source"],
         "pages": pages,
     }
 
@@ -130,6 +136,20 @@ def upload_document(file: UploadFile) -> dict[str, Any]:
     return _payload(_fetch_row(doc_id), pages)
 
 
+@router.post("/documents/manual", status_code=201)
+def create_manual_document(body: ManualRequest) -> dict[str, Any]:
+    # No source file: the page is typed or pasted in the review UI and stored via PUT.
+    title = body.title.strip() or "Untitled"
+    source = (body.source or "").strip() or None
+    doc_id = new_doc_id()
+    pages = [asdict(p) for p in MANUAL_PARSER.parse(Path(""))]
+    pages[0]["title"] = title
+    generated_rel = f"markdown/{doc_id}/generated.json"
+    _write_pages(generated_rel, pages)
+    _insert(doc_id, title, "", MANUAL_PARSER, "", generated_rel, b"", "parsed", source=source)
+    return _payload(_fetch_row(doc_id), pages)
+
+
 def _insert(
     doc_id: str,
     original_name: str,
@@ -139,12 +159,13 @@ def _insert(
     generated_rel: str | None,
     data: bytes,
     status: str,
+    source: str | None = None,
 ) -> None:
     with connect() as conn:
         conn.execute(
             "INSERT INTO documents (id, original_filename, extension, parser_name, "
             "parser_version, raw_path, generated_md_path, final_md_path, sha256, status, "
-            "uploaded_at, saved_at) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, NULL)",
+            "uploaded_at, saved_at, source) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, NULL, ?)",
             (
                 doc_id,
                 original_name,
@@ -156,6 +177,7 @@ def _insert(
                 sha256_of(data),
                 status,
                 _now(),
+                source,
             ),
         )
 

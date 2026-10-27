@@ -17,7 +17,8 @@ CREATE TABLE IF NOT EXISTS documents (
   sha256             TEXT NOT NULL,
   status             TEXT NOT NULL CHECK (status IN ('parsed', 'saved', 'failed')),
   uploaded_at        TEXT NOT NULL,
-  saved_at           TEXT
+  saved_at           TEXT,
+  source             TEXT
 );
 """
 
@@ -26,6 +27,10 @@ def init_db() -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     with connect() as conn:
         conn.executescript(SCHEMA)
+        # CREATE TABLE IF NOT EXISTS skips existing tables, so add newer columns here.
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(documents)")}
+        if "source" not in columns:
+            conn.execute("ALTER TABLE documents ADD COLUMN source TEXT")
 
 
 @contextmanager
