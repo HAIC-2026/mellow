@@ -1,14 +1,29 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { diffLines, type Change } from "diff";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import "./ReviewPage.css";
 import {
+  getDocument,
   llmEditSheet,
   saveDocument,
   type DocumentDetail,
+  type IndexStatus,
   type Page,
 } from "../api/client";
+
+const INDEX_POLL_MS = 2000;
+
+function isIndexing(status: IndexStatus | null): boolean {
+  return status?.status === "pending" || status?.status === "running";
+}
+
+function describeIndex(status: IndexStatus | null): string {
+  if (status === null) return "Not indexed";
+  if (status.status === "failed") return `Failed: ${status.error ?? "unknown error"}`;
+  if (status.status === "done") return "Ready";
+  return status.stage === "embed" ? "Indexing..." : "Extracting...";
+}
 
 interface Props {
   doc: DocumentDetail;
@@ -29,6 +44,21 @@ export default function ReviewPage({ doc, onSaved }: Props) {
   const [llmBusy, setLlmBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [indexStatus, setIndexStatus] = useState<IndexStatus | null>(
+    doc.index_status,
+  );
+
+  // Indexing runs in the background after a save; poll until it ends.
+  const indexing = isIndexing(indexStatus);
+  useEffect(() => {
+    if (!indexing) return;
+    const timer = setInterval(() => {
+      getDocument(doc.id)
+        .then((d) => setIndexStatus(d.index_status))
+        .catch(() => {});
+    }, INDEX_POLL_MS);
+    return () => clearInterval(timer);
+  }, [doc.id, indexing]);
 
   const activePage = pages[active];
   const hasChanges = changes?.some((c) => c.added || c.removed) ?? false;
@@ -77,6 +107,7 @@ export default function ReviewPage({ doc, onSaved }: Props) {
       setBaseline(saved.pages);
       setPages(saved.pages);
       setChanges(null);
+      setIndexStatus(saved.index_status);
       setMessage(`Saved at ${saved.saved_at}`);
       onSaved(saved);
     } catch (err) {
@@ -94,6 +125,11 @@ export default function ReviewPage({ doc, onSaved }: Props) {
         Parser: {doc.parser_name} {doc.parser_version} | Status: {doc.status} |
         Pages: {pages.length}
       </p>
+      {doc.status === "saved" && (
+        <p role={indexStatus?.status === "failed" ? "alert" : undefined}>
+          Search index: {describeIndex(indexStatus)}
+        </p>
+      )}
       <div
         style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 8 }}
       >

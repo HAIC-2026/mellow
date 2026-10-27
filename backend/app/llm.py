@@ -1,20 +1,34 @@
+import logging
 import os
 import time
 from collections.abc import Callable
-from typing import TypeVar
+from typing import Any, TypeVar
 
+import httpx
 from google import genai
-from google.genai import errors, types
+from google.genai import types
 from pydantic import BaseModel
+
+log = logging.getLogger(__name__)
 
 T = TypeVar("T")
 
 DEFAULT_MODEL = "gemini-3-flash-preview"
-DEFAULT_EMBED_MODEL = "gemini-embedding-001"
-EMBED_BATCH_SIZE = 100
-EMBED_BATCH_CHARS = 30_000
-RATE_LIMIT_RETRIES = 5
-RATE_LIMIT_WAIT_SECONDS = 60
+DEFAULT_OLLAMA_URL = "http://localhost:11434"
+DEFAULT_OLLAMA_EMBED_MODEL = "qwen3-embedding"
+EMBED_BATCH_SIZE = 64
+OLLAMA_TIMEOUT_SECONDS = 300
+# Waits between attempts: 4 attempts in total, then the error is raised.
+OLLAMA_RETRY_WAITS = (2, 4, 8)
+
+# Local embedding models take a text prefix instead of a task type. A wrong or missing
+# prefix lowers retrieval quality without any error, so unknown models are rejected.
+EMBED_PREFIXES = {
+    "qwen3-embedding": {
+        "RETRIEVAL_DOCUMENT": "",
+        "RETRIEVAL_QUERY": "Instruct: Given a question, retrieve passages that answer it\nQuery: ",
+    },
+}
 
 ANSWER_PROMPT = """You answer questions using only the numbered source passages below.
 
@@ -67,51 +81,76 @@ def edit_sheet(sheet_markdown: str, instruction: str) -> str:
     return _strip_code_fence(text)
 
 
+def embed_model_key() -> str:
+    """Model and size of the vectors embed() returns, e.g. qwen3-embedding@1024.
+
+    Stored with every vector. Vectors are only compared when their keys match: two models,
+    or one model at two sizes, give incomparable vectors.
+    """
+    dim = os.environ.get("OLLAMA_EMBED_DIM")
+    return f"{_embed_model()}@{dim or 'full'}"
+
+
 def embed(texts: list[str], task_type: str) -> list[list[float]]:
     # task_type: RETRIEVAL_DOCUMENT for indexed chunks, RETRIEVAL_QUERY for questions.
-    client = genai.Client()
-    model = os.environ.get("GEMINI_EMBED_MODEL", DEFAULT_EMBED_MODEL)
-    # Unset means the model's full size. Smaller sizes are truncated (Matryoshka) and not unit length;
+    model = _embed_model()
+    prefixes = EMBED_PREFIXES.get(model.split(":")[0])
+    if prefixes is None:
+        raise RuntimeError(f"no embedding prefixes known for {model}; add them to EMBED_PREFIXES")
+    prefix = prefixes[task_type]
+    body: dict[str, Any] = {"model": model}
+    # Unset means the model's full size. Smaller sizes are not unit length;
     # vector search divides by the norms, so that is fine.
-    dim = os.environ.get("GEMINI_EMBED_DIM")
-    config = types.EmbedContentConfig(task_type=task_type, output_dimensionality=int(dim) if dim else None)
+    dim = os.environ.get("OLLAMA_EMBED_DIM")
+    if dim:
+        body["dimensions"] = int(dim)
     vectors: list[list[float]] = []
-    for batch in _batches(texts):
-        response = _with_rate_limit_retry(
-            lambda: client.models.embed_content(
-                model=model,
-                contents=batch,
-                config=config,
-            )
-        )
-        vectors.extend(e.values or [] for e in response.embeddings or [])
+    for start in range(0, len(texts), EMBED_BATCH_SIZE):
+        batch = [prefix + t for t in texts[start : start + EMBED_BATCH_SIZE]]
+        response = _ollama_post("/api/embed", {**body, "input": batch})
+        vectors.extend(response.get("embeddings") or [])
     if len(vectors) != len(texts):
         raise RuntimeError(f"expected {len(texts)} embeddings, got {len(vectors)}")
     return vectors
 
 
-def _batches(texts: list[str]) -> list[list[str]]:
-    # Bounded by count and size so one request stays well under the per-minute token quota.
-    batches: list[list[str]] = [[]]
-    size = 0
-    for text in texts:
-        if batches[-1] and (len(batches[-1]) >= EMBED_BATCH_SIZE or size + len(text) > EMBED_BATCH_CHARS):
-            batches.append([])
-            size = 0
-        batches[-1].append(text)
-        size += len(text)
-    return batches
+def _embed_model() -> str:
+    return os.environ.get("OLLAMA_EMBED_MODEL", DEFAULT_OLLAMA_EMBED_MODEL)
 
 
-def _with_rate_limit_retry(call: Callable[[], T]) -> T:
-    # Free-tier embedding quota is per minute; large workbooks exceed it in one save.
-    for attempt in range(RATE_LIMIT_RETRIES):
+def _ollama_post(path: str, body: dict[str, Any]) -> dict[str, Any]:
+    url = os.environ.get("OLLAMA_URL", DEFAULT_OLLAMA_URL).rstrip("/") + path
+    return _with_retry(lambda: _raise_for_status(httpx.post(url, json=body, timeout=OLLAMA_TIMEOUT_SECONDS)))
+
+
+def _raise_for_status(response: httpx.Response) -> dict[str, Any]:
+    if response.is_error:
+        # Ollama puts the reason in {"error": "..."}, e.g. a model that is not pulled.
+        try:
+            detail = response.json().get("error") or response.text
+        except ValueError:
+            detail = response.text
+        raise OllamaError(response.status_code, detail)
+    return response.json()
+
+
+class OllamaError(RuntimeError):
+    def __init__(self, status_code: int, detail: str):
+        super().__init__(f"Ollama HTTP {status_code}: {detail}")
+        self.status_code = status_code
+
+
+def _with_retry(call: Callable[[], T]) -> T:
+    # Retry what can recover on its own: Ollama not running yet, timeouts, server errors.
+    # Client errors such as a model that is not pulled fail at once.
+    for wait in (*OLLAMA_RETRY_WAITS, None):
         try:
             return call()
-        except errors.ClientError as exc:
-            if exc.code != 429 or attempt == RATE_LIMIT_RETRIES - 1:
+        except (httpx.TransportError, OllamaError) as exc:
+            if wait is None or (isinstance(exc, OllamaError) and exc.status_code < 500):
                 raise
-            time.sleep(RATE_LIMIT_WAIT_SECONDS)
+            log.warning("Ollama request failed (%s); retrying in %ss", exc, wait)
+            time.sleep(wait)
     raise AssertionError("unreachable")
 
 

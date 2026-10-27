@@ -13,7 +13,7 @@ from app.db import connect
 from app.llm import edit_sheet
 from app.parsers.base import Page
 from app.parsers.registry import MANUAL_PARSER, PARSERS, get_parser
-from app.rag.indexer import index_document
+from app.rag import jobs
 from app.storage import new_doc_id, sha256_of
 
 router = APIRouter(prefix="/api")
@@ -94,6 +94,8 @@ def _payload(row: Any, pages: list[dict[str, Any]]) -> dict[str, Any]:
         "saved_at": row["saved_at"],
         "source": row["source"],
         "pages": pages,
+        # null for documents never queued: unsaved, or saved before indexing became a job.
+        "index_status": jobs.status_of(row["id"]),
     }
 
 
@@ -213,12 +215,10 @@ def save_document(doc_id: str, body: SaveRequest) -> dict[str, Any]:
             "UPDATE documents SET final_md_path = ?, status = 'saved', saved_at = ? WHERE id = ?",
             (final_rel, saved_at, doc_id),
         )
-    # The save is durable at this point; an indexing failure only degrades search.
-    try:
-        index_warning = index_document(doc_id, pages)
-    except Exception as exc:
-        index_warning = f"indexing failed: {exc}"
-    return {**_payload(_fetch_row(doc_id), pages), "index_warning": index_warning}
+    # The save is durable at this point. Indexing runs in the background worker; the
+    # response carries the job status, which GET /api/documents/{id} keeps updating.
+    jobs.enqueue([doc_id])
+    return _payload(_fetch_row(doc_id), pages)
 
 
 @router.post("/documents/{doc_id}/llm-edit")

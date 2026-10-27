@@ -51,6 +51,18 @@ CREATE INDEX IF NOT EXISTS spans_chunk_id ON spans (chunk_id);
 
 -- rowid = chunks.id. Porter stemming so "agency" matches "agencies".
 CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(text, tokenize='porter unicode61');
+
+-- One indexing job per document. Each save increments generation; a run whose generation
+-- is no longer current discards its results.
+CREATE TABLE IF NOT EXISTS index_jobs (
+  doc_id      TEXT PRIMARY KEY,
+  generation  INTEGER NOT NULL,
+  stage       TEXT NOT NULL CHECK (stage IN ('embed', 'extract')),
+  status      TEXT NOT NULL CHECK (status IN ('pending', 'running', 'done', 'failed')),
+  attempts    INTEGER NOT NULL DEFAULT 0,
+  error       TEXT,
+  updated_at  TEXT NOT NULL
+);
 """
 
 
@@ -64,6 +76,10 @@ def init_db() -> None:
             conn.execute("ALTER TABLE documents ADD COLUMN source TEXT")
         if "indexed_at" not in columns:
             conn.execute("ALTER TABLE documents ADD COLUMN indexed_at TEXT")
+        chunk_columns = {row["name"] for row in conn.execute("PRAGMA table_info(chunks)")}
+        if "embed_model" not in chunk_columns:
+            # Existing rows keep NULL, so vector search ignores them until the next reindex.
+            conn.execute("ALTER TABLE chunks ADD COLUMN embed_model TEXT")
         # Older databases have chunks_fts without stemming. Rebuild it from chunks; no re-embedding needed.
         fts_sql = conn.execute("SELECT sql FROM sqlite_master WHERE name = 'chunks_fts'").fetchone()["sql"]
         if "porter" not in fts_sql:

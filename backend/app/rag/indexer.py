@@ -5,37 +5,42 @@ from typing import Any
 import numpy as np
 
 from app.db import connect
-from app.llm import embed
+from app.llm import embed, embed_model_key
 from app.rag.spans import Chunk, group_chunks, split_spans
 
 log = logging.getLogger(__name__)
 
 
-def index_document(doc_id: str, pages: list[dict[str, Any]]) -> str | None:
-    """Rebuild the retrieval index for one document. Returns a warning if embedding failed."""
+def index_document(doc_id: str, pages: list[dict[str, Any]], generation: int) -> bool:
+    """Rebuild the retrieval index for one document.
+
+    Raises if embedding fails; the old index is then left as it was. Returns False without
+    writing when the document was saved again while this ran (its job generation changed).
+    """
     entries: list[tuple[dict[str, Any], Chunk]] = []
     for page in pages:
         for chunk in group_chunks(split_spans(page["markdown"])):
             entries.append((page, chunk))
 
-    # Embed before touching the DB. If it fails, keyword search still works off FTS.
-    warning = None
-    vectors: list[bytes | None] = [None] * len(entries)
-    if entries:
-        try:
-            raw = embed([chunk.text for _, chunk in entries], "RETRIEVAL_DOCUMENT")
-            vectors = [np.asarray(v, dtype=np.float32).tobytes() for v in raw]
-        except Exception as exc:
-            log.exception("embedding failed for %s", doc_id)
-            warning = f"indexed for keyword search only; embedding failed: {exc}"
+    # Embed before touching the DB, so the old index stays searchable until the swap.
+    model_key = embed_model_key()
+    raw = embed([chunk.text for _, chunk in entries], "RETRIEVAL_DOCUMENT") if entries else []
+    vectors = [np.asarray(v, dtype=np.float32).tobytes() for v in raw]
 
     with connect() as conn:
+        # Take the write lock before the generation check, so no save can commit between
+        # the check and the swap.
+        conn.execute("BEGIN IMMEDIATE")
+        current = conn.execute("SELECT generation FROM index_jobs WHERE doc_id = ?", (doc_id,)).fetchone()
+        if current is None or current["generation"] != generation:
+            log.info("discarding stale index run for %s (generation %s)", doc_id, generation)
+            return False
         _delete(conn, doc_id)
         for (page, chunk), vector in zip(entries, vectors):
             cur = conn.execute(
-                "INSERT INTO chunks (doc_id, page_number, page_title, heading_path, text, embedding) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
-                (doc_id, page["number"], page["title"], chunk.heading_path, chunk.text, vector),
+                "INSERT INTO chunks (doc_id, page_number, page_title, heading_path, text, embedding, embed_model) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (doc_id, page["number"], page["title"], chunk.heading_path, chunk.text, vector, model_key),
             )
             chunk_id = cur.lastrowid
             conn.execute("INSERT INTO chunks_fts (rowid, text) VALUES (?, ?)", (chunk_id, chunk.text))
@@ -47,9 +52,10 @@ def index_document(doc_id: str, pages: list[dict[str, Any]]) -> str | None:
                     for s in chunk.spans
                 ],
             )
-        indexed_at = None if warning else datetime.now(timezone.utc).isoformat()
-        conn.execute("UPDATE documents SET indexed_at = ? WHERE id = ?", (indexed_at, doc_id))
-    return warning
+        conn.execute(
+            "UPDATE documents SET indexed_at = ? WHERE id = ?", (datetime.now(timezone.utc).isoformat(), doc_id)
+        )
+    return True
 
 
 def _delete(conn: Any, doc_id: str) -> None:

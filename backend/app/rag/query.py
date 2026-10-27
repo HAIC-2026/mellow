@@ -1,13 +1,10 @@
-import logging
 import re
 from typing import Any
 
 import numpy as np
 
 from app.db import connect
-from app.llm import answer_with_citations, embed
-
-log = logging.getLogger(__name__)
+from app.llm import answer_with_citations, embed, embed_model_key
 
 CANDIDATES = 20
 RRF_K = 60
@@ -98,18 +95,15 @@ def _keyword_search(conn: Any, question: str) -> list[int]:
 
 
 def _vector_search(conn: Any, question: str) -> list[int]:
-    rows = conn.execute("SELECT id, embedding FROM chunks WHERE embedding IS NOT NULL").fetchall()
+    # Only vectors from the current model and size are comparable. Others are ignored
+    # until `python -m app.rag.reindex` is run.
+    rows = conn.execute(
+        "SELECT id, embedding FROM chunks WHERE embedding IS NOT NULL AND embed_model = ?", (embed_model_key(),)
+    ).fetchall()
     if not rows:
         return []
-    try:
-        query = np.asarray(embed([question], "RETRIEVAL_QUERY")[0], dtype=np.float32)
-    except Exception:
-        log.exception("query embedding failed; using keyword search only")
-        return []
-    # Skip vectors from a different embedding model until `python -m app.rag.reindex` is run.
-    rows = [r for r in rows if len(r["embedding"]) == query.nbytes]
-    if not rows:
-        return []
+    # No keyword-only fallback: if Ollama is down after retries, the question fails.
+    query = np.asarray(embed([question], "RETRIEVAL_QUERY")[0], dtype=np.float32)
     matrix = np.stack([np.frombuffer(r["embedding"], dtype=np.float32) for r in rows])
     scores = matrix @ query / (np.linalg.norm(matrix, axis=1) * np.linalg.norm(query) + 1e-9)
     order = np.argsort(-scores)[:CANDIDATES]

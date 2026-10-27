@@ -19,8 +19,18 @@ export interface Page {
   markdown: string;
 }
 
+export interface IndexStatus {
+  stage: "embed" | "extract";
+  status: "pending" | "running" | "done" | "failed";
+  error: string | null;
+  updated_at: string;
+  indexed_at: string | null;
+}
+
 export interface DocumentDetail extends DocumentSummary {
   pages: Page[];
+  // null when the document was never queued for indexing.
+  index_status: IndexStatus | null;
 }
 
 export interface ParserInfo {

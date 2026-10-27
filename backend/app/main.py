@@ -5,13 +5,17 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.db import init_db
+from app.rag.worker import Worker
 from app.routers import ask, documents
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     init_db()
+    worker = Worker()
+    worker.start()
     yield
+    worker.stop()
 
 
 app = FastAPI(title="Know Ur District Ingestion", lifespan=lifespan)

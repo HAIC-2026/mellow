@@ -1,9 +1,12 @@
+import logging
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from app.rag.query import ask
+
+log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api")
 
@@ -23,4 +26,6 @@ def ask_question(body: AskRequest) -> dict[str, Any]:
     try:
         return ask(question, body.top_k, body.debug)
     except Exception as exc:
-        raise HTTPException(502, f"LLM request failed: {exc}") from exc
+        # Ollama (question embedding) or Gemini (answer) failed after their retries.
+        log.exception("question failed")
+        raise HTTPException(502, f"model request failed: {exc}") from exc
