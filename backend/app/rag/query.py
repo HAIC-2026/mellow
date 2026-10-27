@@ -14,19 +14,28 @@ RRF_K = 60
 NOT_FOUND = "The saved documents do not cover this question."
 
 
-def ask(question: str, top_k: int = 8) -> dict[str, Any]:
+def ask(question: str, top_k: int = 8, debug: bool = False) -> dict[str, Any]:
     with connect() as conn:
-        ranked = _fuse([_keyword_search(conn, question), _vector_search(conn, question)])[:top_k]
+        keyword = _keyword_search(conn, question)
+        vector = _vector_search(conn, question)
+        ranked = _fuse([keyword, vector])[:top_k]
         spans = _spans_for(conn, ranked)
+        debug_chunks = _debug_chunks(conn, ranked, keyword, vector) if debug else None
+
+    def with_debug(result: dict[str, Any], passages: str | None, raw: str | None) -> dict[str, Any]:
+        if debug:
+            result["debug"] = {"chunks": debug_chunks, "passages": passages, "raw_response": raw}
+        return result
 
     if not spans:
-        return {"found": False, "answer_segments": [{"text": NOT_FOUND, "citations": []}], "citations": {}}
+        not_found = {"found": False, "answer_segments": [{"text": NOT_FOUND, "citations": []}], "citations": {}}
+        return with_debug(not_found, None, None)
 
     passages = "\n".join(
         f"[{s['span_id']}] ({s['original_filename']} › {s['heading_path'] or s['page_title']}) {s['llm_text']}"
         for s in spans
     )
-    answer = answer_with_citations(question, passages)
+    answer, raw = answer_with_citations(question, passages)
 
     # Only ids we sent count as citations; the LLM never supplies document names or quotes.
     by_id = {s["span_id"]: s for s in spans}
@@ -41,7 +50,31 @@ def ask(question: str, top_k: int = 8) -> dict[str, Any]:
     found = answer.found and bool(cited)
     if not found:
         segments, cited = [{"text": NOT_FOUND, "citations": []}], {}
-    return {"found": found, "answer_segments": segments, "citations": cited}
+    return with_debug({"found": found, "answer_segments": segments, "citations": cited}, passages, raw)
+
+
+def _debug_chunks(conn: Any, ranked: list[int], keyword: list[int], vector: list[int]) -> list[dict[str, Any]]:
+    # The chunks whose spans were sent to the LLM, in fused order, with their rank in each search.
+    if not ranked:
+        return []
+    marks = ",".join("?" * len(ranked))
+    rows = conn.execute(
+        "SELECT c.id AS chunk_id, c.doc_id, d.original_filename, c.page_number, c.page_title, "
+        "c.heading_path, c.text FROM chunks c JOIN documents d ON d.id = c.doc_id "
+        f"WHERE c.id IN ({marks}) AND d.status = 'saved'",
+        ranked,
+    ).fetchall()
+    by_id = {r["chunk_id"]: dict(r) for r in rows}
+    chunks = []
+    for fused_rank, chunk_id in enumerate(ranked, start=1):
+        if chunk_id not in by_id:
+            continue
+        chunk = by_id[chunk_id]
+        chunk["fused_rank"] = fused_rank
+        chunk["keyword_rank"] = keyword.index(chunk_id) + 1 if chunk_id in keyword else None
+        chunk["vector_rank"] = vector.index(chunk_id) + 1 if chunk_id in vector else None
+        chunks.append(chunk)
+    return chunks
 
 
 def _keyword_search(conn: Any, question: str) -> list[int]:

@@ -98,17 +98,38 @@ export interface AnswerSegment {
   citations: number[];
 }
 
+export interface DebugChunk {
+  chunk_id: number;
+  doc_id: string;
+  original_filename: string;
+  page_number: number;
+  page_title: string;
+  heading_path: string;
+  text: string;
+  fused_rank: number;
+  keyword_rank: number | null;
+  vector_rank: number | null;
+}
+
+export interface AskDebug {
+  chunks: DebugChunk[];
+  // Exact passages text in the prompt; null when nothing was retrieved and the LLM was not called.
+  passages: string | null;
+  raw_response: string | null;
+}
+
 export interface AskResponse {
   found: boolean;
   answer_segments: AnswerSegment[];
   citations: Record<string, Citation>;
+  debug?: AskDebug;
 }
 
-export function ask(question: string): Promise<AskResponse> {
+export function ask(question: string, debug = false): Promise<AskResponse> {
   return request("/api/ask", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ question }),
+    body: JSON.stringify({ question, debug }),
   });
 }
 

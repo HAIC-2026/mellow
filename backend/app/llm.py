@@ -9,7 +9,7 @@ from pydantic import BaseModel
 
 T = TypeVar("T")
 
-DEFAULT_MODEL = "gemini-2.5-flash"
+DEFAULT_MODEL = "gemini-3-flash-preview"
 DEFAULT_EMBED_MODEL = "gemini-embedding-001"
 EMBED_BATCH_SIZE = 100
 EMBED_BATCH_CHARS = 30_000
@@ -111,7 +111,8 @@ def _with_rate_limit_retry(call: Callable[[], T]) -> T:
     raise AssertionError("unreachable")
 
 
-def answer_with_citations(question: str, passages: str) -> Answer:
+def answer_with_citations(question: str, passages: str) -> tuple[Answer, str]:
+    """Returns the parsed answer and the model's raw response text."""
     client = genai.Client()
     response = client.models.generate_content(
         model=os.environ.get("GEMINI_MODEL", DEFAULT_MODEL),
@@ -122,9 +123,10 @@ def answer_with_citations(question: str, passages: str) -> Answer:
             temperature=0,
         ),
     )
+    raw = response.text or ""
     if isinstance(response.parsed, Answer):
-        return response.parsed
-    return Answer.model_validate_json(response.text or "")
+        return response.parsed, raw
+    return Answer.model_validate_json(raw), raw
 
 
 def _strip_code_fence(text: str) -> str:

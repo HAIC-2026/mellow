@@ -3,11 +3,21 @@ import { ask, type AskResponse, type Citation } from '../api/client'
 import SourceViewer from './SourceViewer'
 import './AskPage.css'
 
+function formatJson(raw: string | null): string {
+  if (raw === null) return '(LLM not called: nothing retrieved)'
+  try {
+    return JSON.stringify(JSON.parse(raw), null, 2)
+  } catch {
+    return raw
+  }
+}
+
 export default function AskPage() {
   const [question, setQuestion] = useState('')
   const [result, setResult] = useState<AskResponse | null>(null)
   const [selected, setSelected] = useState<Citation | null>(null)
   const [loading, setLoading] = useState(false)
+  const [debug, setDebug] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   async function submit(e: FormEvent) {
@@ -17,7 +27,7 @@ export default function AskPage() {
     setError(null)
     setSelected(null)
     try {
-      setResult(await ask(question))
+      setResult(await ask(question, debug))
     } catch (err) {
       setError((err as Error).message)
     } finally {
@@ -41,6 +51,10 @@ export default function AskPage() {
           placeholder="Ask a question about your saved documents"
           style={{ flex: 1 }}
         />
+        <label style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+          <input type="checkbox" checked={debug} onChange={(e) => setDebug(e.target.checked)} />
+          Debug
+        </label>
         <button type="submit" disabled={loading}>
           {loading ? 'Asking…' : 'Ask'}
         </button>
@@ -80,6 +94,30 @@ export default function AskPage() {
                   )
                 })}
               </ol>
+            )}
+            {result.debug && (
+              <div className="ask-debug">
+                <details open>
+                  <summary>Chunks sent to the LLM ({result.debug.chunks.length})</summary>
+                  {result.debug.chunks.map((c) => (
+                    <details key={c.chunk_id}>
+                      <summary>
+                        #{c.fused_rank} · chunk {c.chunk_id} · keyword {c.keyword_rank ?? '-'} · vector{' '}
+                        {c.vector_rank ?? '-'} · {c.original_filename} › {c.heading_path || c.page_title}
+                      </summary>
+                      <pre>{c.text}</pre>
+                    </details>
+                  ))}
+                </details>
+                <details>
+                  <summary>Passages in the prompt</summary>
+                  <pre>{result.debug.passages ?? '(LLM not called: nothing retrieved)'}</pre>
+                </details>
+                <details open>
+                  <summary>Raw LLM response</summary>
+                  <pre>{formatJson(result.debug.raw_response)}</pre>
+                </details>
+              </div>
             )}
           </div>
           {selected && (

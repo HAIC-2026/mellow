@@ -46,6 +46,21 @@
   font-size: 0.9em;
 }
 
+.ask-debug {
+  margin-top: 24px;
+  border-top: 1px dashed #aaa;
+  padding-top: 12px;
+  font-size: 0.85em;
+}
+
+.ask-debug pre {
+  white-space: pre-wrap;
+  background: #f6f6f6;
+  padding: 8px;
+  max-height: 300px;
+  overflow: auto;
+}
+
 mark.cite,
 tr.cite-row {
   background: #ffe066;
