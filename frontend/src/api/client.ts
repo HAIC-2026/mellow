@@ -12,8 +12,14 @@ export interface DocumentSummary {
   saved_at: string | null
 }
 
+export interface Page {
+  number: number
+  title: string
+  markdown: string
+}
+
 export interface DocumentDetail extends DocumentSummary {
-  markdown: string | null
+  pages: Page[]
 }
 
 export interface ParserInfo {
@@ -61,10 +67,10 @@ export function llmEditSheet(
   })
 }
 
-export function saveDocument(id: string, markdown: string): Promise<DocumentDetail> {
+export function saveDocument(id: string, pages: Page[]): Promise<DocumentDetail> {
   return request(`/api/documents/${id}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ markdown }),
+    body: JSON.stringify({ pages }),
   })
 }

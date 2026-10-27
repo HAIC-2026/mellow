@@ -1,3 +1,6 @@
+import json
+import re
+from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -8,6 +11,7 @@ from pydantic import BaseModel
 from app.config import DATA_DIR, MARKDOWN_DIR, UPLOADS_DIR
 from app.db import connect
 from app.llm import edit_sheet
+from app.parsers.base import Page
 from app.parsers.registry import PARSERS, get_parser
 from app.storage import new_doc_id, sha256_of
 
@@ -19,8 +23,14 @@ COLUMNS = (
 )
 
 
-class SaveRequest(BaseModel):
+class PageModel(BaseModel):
+    number: int
+    title: str
     markdown: str
+
+
+class SaveRequest(BaseModel):
+    pages: list[PageModel]
 
 
 class LlmEditRequest(BaseModel):
@@ -32,10 +42,29 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _read_markdown(rel_path: str | None) -> str | None:
+def _legacy_pages(markdown: str) -> list[dict[str, Any]]:
+    # Documents parsed before paging stored one markdown file; split it per sheet.
+    chunks = [c for c in re.split(r"^(?=## )", markdown, flags=re.MULTILINE) if c.strip()]
+    pages = []
+    for i, chunk in enumerate(chunks, start=1):
+        title = chunk.split("\n")[0][3:].strip() if chunk.startswith("## ") else "Intro"
+        pages.append({"number": i, "title": title or f"Sheet {i}", "markdown": chunk})
+    return pages
+
+
+def _read_pages(rel_path: str | None) -> list[dict[str, Any]]:
     if rel_path is None:
-        return None
-    return (DATA_DIR / rel_path).read_text(encoding="utf-8")
+        return []
+    path = DATA_DIR / rel_path
+    if path.suffix == ".md":
+        return _legacy_pages(path.read_text(encoding="utf-8"))
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _write_pages(rel_path: str, pages: list[dict[str, Any]]) -> None:
+    path = DATA_DIR / rel_path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(pages, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def _fetch_row(doc_id: str) -> Any:
@@ -46,7 +75,7 @@ def _fetch_row(doc_id: str) -> Any:
     return row
 
 
-def _payload(row: Any, markdown: str | None) -> dict[str, Any]:
+def _payload(row: Any, pages: list[dict[str, Any]]) -> dict[str, Any]:
     return {
         "id": row["id"],
         "original_filename": row["original_filename"],
@@ -57,7 +86,7 @@ def _payload(row: Any, markdown: str | None) -> dict[str, Any]:
         "sha256": row["sha256"],
         "uploaded_at": row["uploaded_at"],
         "saved_at": row["saved_at"],
-        "markdown": markdown,
+        "pages": pages,
     }
 
 
@@ -85,20 +114,20 @@ def upload_document(file: UploadFile) -> dict[str, Any]:
     raw_path.write_bytes(data)
 
     generated_rel: str | None = None
-    markdown: str | None = None
+    pages: list[dict[str, Any]] = []
     status = "parsed"
     try:
-        markdown = parser.parse(raw_path)
-        generated_rel = f"markdown/{doc_id}/generated.md"
-        (DATA_DIR / generated_rel).parent.mkdir(parents=True)
-        (DATA_DIR / generated_rel).write_text(markdown, encoding="utf-8")
+        parsed: list[Page] = parser.parse(raw_path)
+        pages = [asdict(p) for p in parsed]
+        generated_rel = f"markdown/{doc_id}/generated.json"
+        _write_pages(generated_rel, pages)
     except Exception as exc:
         status = "failed"
         _insert(doc_id, original_name, extension, parser, raw_rel, None, data, status)
         raise HTTPException(422, f"parse failed: {exc}") from exc
 
     _insert(doc_id, original_name, extension, parser, raw_rel, generated_rel, data, status)
-    return _payload(_fetch_row(doc_id), markdown)
+    return _payload(_fetch_row(doc_id), pages)
 
 
 def _insert(
@@ -142,7 +171,7 @@ def list_documents() -> list[dict[str, Any]]:
 def get_document(doc_id: str) -> dict[str, Any]:
     row = _fetch_row(doc_id)
     rel = row["final_md_path"] if row["status"] == "saved" else row["generated_md_path"]
-    return _payload(row, _read_markdown(rel))
+    return _payload(row, _read_pages(rel))
 
 
 @router.put("/documents/{doc_id}")
@@ -151,10 +180,9 @@ def save_document(doc_id: str, body: SaveRequest) -> dict[str, Any]:
     if row["status"] == "failed":
         raise HTTPException(409, "cannot save a document that failed to parse")
 
-    final_rel = f"markdown/{doc_id}/final.md"
-    final_path = DATA_DIR / final_rel
-    final_path.parent.mkdir(parents=True, exist_ok=True)
-    final_path.write_text(body.markdown, encoding="utf-8")
+    pages = [page.model_dump() for page in body.pages]
+    final_rel = f"markdown/{doc_id}/final.json"
+    _write_pages(final_rel, pages)
 
     saved_at = _now()
     with connect() as conn:
@@ -162,7 +190,7 @@ def save_document(doc_id: str, body: SaveRequest) -> dict[str, Any]:
             "UPDATE documents SET final_md_path = ?, status = 'saved', saved_at = ? WHERE id = ?",
             (final_rel, saved_at, doc_id),
         )
-    return _payload(_fetch_row(doc_id), body.markdown)
+    return _payload(_fetch_row(doc_id), pages)
 
 
 @router.post("/documents/{doc_id}/llm-edit")

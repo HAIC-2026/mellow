@@ -1,7 +1,7 @@
 from app.parsers.base import Parser
-from app.parsers.markitdown_parser import MarkItDownParser
+from app.parsers.excel_pandas import ExcelPandasParser
 
-PARSERS: dict[str, Parser] = {".xlsx": MarkItDownParser()}
+PARSERS: dict[str, Parser] = {".xlsx": ExcelPandasParser()}
 
 
 def get_parser(extension: str) -> Parser | None:
