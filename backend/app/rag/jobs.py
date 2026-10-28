@@ -25,6 +25,24 @@ def enqueue(doc_ids: list[str]) -> None:
     wake.set()
 
 
+def enqueue_graph(doc_ids: list[str]) -> None:
+    """Queue stage extract only, for documents whose chunks are already current."""
+    now = _now()
+    with connect() as conn:
+        conn.executemany(
+            "UPDATE index_jobs SET generation = generation + 1, stage = 'extract', status = 'pending', "
+            "attempts = 0, error = NULL, updated_at = ? WHERE doc_id = ?",
+            [(now, doc_id) for doc_id in doc_ids],
+        )
+    wake.set()
+
+
+def is_current(conn: Any, doc_id: str, generation: int) -> bool:
+    """A stage may write only while its generation is still the job's generation."""
+    row = conn.execute("SELECT generation FROM index_jobs WHERE doc_id = ?", (doc_id,)).fetchone()
+    return row is not None and row["generation"] == generation
+
+
 def claim() -> dict[str, Any] | None:
     """Mark the oldest pending job running and return it, or None if there is none.
 
@@ -66,7 +84,7 @@ def reset_running() -> None:
 def status_of(doc_id: str) -> dict[str, Any] | None:
     with connect() as conn:
         row = conn.execute(
-            "SELECT j.stage, j.status, j.error, j.updated_at, d.indexed_at FROM index_jobs j "
+            "SELECT j.stage, j.status, j.error, j.updated_at, d.indexed_at, d.graph_indexed_at FROM index_jobs j "
             "JOIN documents d ON d.id = j.doc_id WHERE j.doc_id = ?",
             (doc_id,),
         ).fetchone()

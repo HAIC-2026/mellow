@@ -11,6 +11,8 @@ export interface DocumentSummary {
   uploaded_at: string;
   saved_at: string | null;
   source: string | null;
+  // null when the document was never queued for indexing.
+  index_status: IndexStatus | null;
 }
 
 export interface Page {
@@ -29,8 +31,6 @@ export interface IndexStatus {
 
 export interface DocumentDetail extends DocumentSummary {
   pages: Page[];
-  // null when the document was never queued for indexing.
-  index_status: IndexStatus | null;
 }
 
 export interface ParserInfo {
@@ -128,11 +128,41 @@ export interface AskDebug {
   raw_response: string | null;
 }
 
+export interface GraphDebugTarget {
+  id: number;
+  canonical_name: string;
+  type: string;
+}
+
+export interface GraphDebugAssertion {
+  id: number;
+  src: number;
+  dst: number;
+  src_name: string;
+  dst_name: string;
+  type: string;
+  predicate: string;
+  polarity: "positive" | "negative";
+  explicit: boolean;
+  doc_id: string;
+  span_ids: number[];
+}
+
+export interface GraphDebug {
+  target: GraphDebugTarget | null;
+  targets: number[];
+  question_kind: "causes_of" | "other";
+  assertions: GraphDebugAssertion[];
+  // links: per link, the assertion ids on it. score: [has explicit, documents].
+  paths: { links: number[][]; score: [boolean, number]; chain: string }[];
+  conflicts: { src: number; dst: number; type: string; assertion_ids: number[] }[];
+}
+
 export interface AskResponse {
   found: boolean;
   answer_segments: AnswerSegment[];
   citations: Record<string, Citation>;
-  debug?: AskDebug;
+  debug?: AskDebug & { graph?: GraphDebug | null };
 }
 
 export function ask(question: string, debug = false): Promise<AskResponse> {
@@ -152,4 +182,55 @@ export function saveDocument(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ pages }),
   });
+}
+
+export interface GraphNode {
+  id: number;
+  name: string;
+  type: string;
+  mentions: number;
+}
+
+export interface GraphAssertion {
+  id: number;
+  predicate: string;
+  polarity: "positive" | "negative";
+  explicit: boolean;
+  doc_id: string;
+  doc_name: string;
+  span_ids: number[];
+  // Same shape as an ask citation, so SourceViewer can open them.
+  spans: Citation[];
+}
+
+export interface GraphEdge {
+  src: number;
+  dst: number;
+  type: string;
+  class: string;
+  documents: number;
+  conflict: boolean;
+  review: boolean;
+  assertions: GraphAssertion[];
+}
+
+export interface GraphResponse {
+  nodes: GraphNode[];
+  edges: GraphEdge[];
+  truncated: boolean;
+}
+
+export interface EntityMatch {
+  id: number;
+  name: string;
+  type: string;
+  mentions: number;
+}
+
+export function getGraph(entity: number, depth: number, maxNodes = 150): Promise<GraphResponse> {
+  return request(`/api/graph?entity=${entity}&depth=${depth}&max_nodes=${maxNodes}`);
+}
+
+export function searchEntities(q: string): Promise<EntityMatch[]> {
+  return request(`/api/graph/entities?q=${encodeURIComponent(q)}`);
 }

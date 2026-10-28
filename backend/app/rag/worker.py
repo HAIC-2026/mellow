@@ -5,6 +5,7 @@ import threading
 
 from app.db import connect
 from app.rag import jobs
+from app.rag.graph_extract import extract_document
 from app.rag.indexer import index_document
 from app.routers.documents import _read_pages
 
@@ -15,16 +16,20 @@ POLL_SECONDS = 5
 
 
 def run_job(job: dict) -> None:
+    # Each stage moves the job itself, in the same transaction as its results.
+    # A failure leaves the job failed, and the results of earlier stages in place.
     doc_id, generation = job["doc_id"], job["generation"]
     try:
-        with connect() as conn:
-            row = conn.execute(
-                "SELECT final_md_path FROM documents WHERE id = ? AND status = 'saved'", (doc_id,)
-            ).fetchone()
-        if row is None:
-            raise RuntimeError("document is not saved")
-        if index_document(doc_id, _read_pages(row["final_md_path"]), generation):
-            jobs.finish(doc_id, generation, "done")
+        if job["stage"] == "embed":
+            with connect() as conn:
+                row = conn.execute(
+                    "SELECT final_md_path FROM documents WHERE id = ? AND status = 'saved'", (doc_id,)
+                ).fetchone()
+            if row is None:
+                raise RuntimeError("document is not saved")
+            index_document(doc_id, _read_pages(row["final_md_path"]), generation)
+        else:
+            extract_document(doc_id, generation)
     except Exception as exc:
         log.exception("indexing failed for %s (stage %s)", doc_id, job["stage"])
         jobs.finish(doc_id, generation, "failed", str(exc))

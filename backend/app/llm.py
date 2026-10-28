@@ -7,7 +7,7 @@ from typing import Any, TypeVar
 import httpx
 from google import genai
 from google.genai import types
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 log = logging.getLogger(__name__)
 
@@ -16,8 +16,9 @@ T = TypeVar("T")
 DEFAULT_MODEL = "gemini-3-flash-preview"
 DEFAULT_OLLAMA_URL = "http://localhost:11434"
 DEFAULT_OLLAMA_EMBED_MODEL = "qwen3-embedding"
+DEFAULT_OLLAMA_EXTRACT_MODEL = "qwen3:30b"
 EMBED_BATCH_SIZE = 64
-OLLAMA_TIMEOUT_SECONDS = 300
+OLLAMA_TIMEOUT_SECONDS = 600
 # Waits between attempts: 4 attempts in total, then the error is raised.
 OLLAMA_RETRY_WAITS = (2, 4, 8)
 
@@ -39,7 +40,7 @@ Rules:
   Cite the specific passages, not every passage.
 - If the passages do not contain the answer, set found to false and return one
   segment saying the documents do not cover it, with empty span_ids.
-
+{rules}
 Question:
 {question}
 
@@ -118,9 +119,44 @@ def _embed_model() -> str:
     return os.environ.get("OLLAMA_EMBED_MODEL", DEFAULT_OLLAMA_EMBED_MODEL)
 
 
+def extract_model() -> str:
+    return os.environ.get("OLLAMA_EXTRACT_MODEL", DEFAULT_OLLAMA_EXTRACT_MODEL)
+
+
+def generate_json(prompt: str, model_cls: type[T], think: bool | None = None) -> T:
+    """Ask the extraction model for JSON shaped like model_cls, and validate it.
+
+    The schema is enforced by Ollama. A reply that still fails validation counts as a failed
+    attempt and is retried like a server error.
+    """
+    if think is None:
+        think = os.environ.get("OLLAMA_EXTRACT_THINK", "true").lower() not in ("0", "false", "no", "")
+    body: dict[str, Any] = {
+        "model": extract_model(),
+        "messages": [{"role": "user", "content": prompt}],
+        "format": model_cls.model_json_schema(),
+        "stream": False,
+        "think": think,
+        "options": {"temperature": 0},
+    }
+
+    def attempt() -> T:
+        content = _ollama_once("/api/chat", body)["message"]["content"]
+        try:
+            return model_cls.model_validate_json(content)
+        except ValidationError as exc:
+            raise InvalidOutput(f"{model_cls.__name__}: {exc}") from exc
+
+    return _with_retry(attempt, retry_on=(InvalidOutput,))
+
+
 def _ollama_post(path: str, body: dict[str, Any]) -> dict[str, Any]:
+    return _with_retry(lambda: _ollama_once(path, body))
+
+
+def _ollama_once(path: str, body: dict[str, Any]) -> dict[str, Any]:
     url = os.environ.get("OLLAMA_URL", DEFAULT_OLLAMA_URL).rstrip("/") + path
-    return _with_retry(lambda: _raise_for_status(httpx.post(url, json=body, timeout=OLLAMA_TIMEOUT_SECONDS)))
+    return _raise_for_status(httpx.post(url, json=body, timeout=OLLAMA_TIMEOUT_SECONDS))
 
 
 def _raise_for_status(response: httpx.Response) -> dict[str, Any]:
@@ -140,13 +176,17 @@ class OllamaError(RuntimeError):
         self.status_code = status_code
 
 
-def _with_retry(call: Callable[[], T]) -> T:
-    # Retry what can recover on its own: Ollama not running yet, timeouts, server errors.
-    # Client errors such as a model that is not pulled fail at once.
+class InvalidOutput(RuntimeError):
+    """The model replied, but the reply does not match the schema."""
+
+
+def _with_retry(call: Callable[[], T], retry_on: tuple[type[Exception], ...] = ()) -> T:
+    # Retry what can recover on its own: Ollama not running yet, timeouts, server errors,
+    # and replies that fail validation. Client errors such as a model that is not pulled fail at once.
     for wait in (*OLLAMA_RETRY_WAITS, None):
         try:
             return call()
-        except (httpx.TransportError, OllamaError) as exc:
+        except (httpx.TransportError, OllamaError, *retry_on) as exc:
             if wait is None or (isinstance(exc, OllamaError) and exc.status_code < 500):
                 raise
             log.warning("Ollama request failed (%s); retrying in %ss", exc, wait)
@@ -154,12 +194,12 @@ def _with_retry(call: Callable[[], T]) -> T:
     raise AssertionError("unreachable")
 
 
-def answer_with_citations(question: str, passages: str) -> tuple[Answer, str]:
-    """Returns the parsed answer and the model's raw response text."""
+def answer_with_citations(question: str, passages: str, rules: str = "") -> tuple[Answer, str]:
+    """Returns the parsed answer and the model's raw response text. rules: extra instructions, e.g. graph chains."""
     client = genai.Client()
     response = client.models.generate_content(
         model=os.environ.get("GEMINI_MODEL", DEFAULT_MODEL),
-        contents=ANSWER_PROMPT.format(question=question, passages=passages),
+        contents=ANSWER_PROMPT.format(question=question, passages=passages, rules=f"\n{rules}\n" if rules else ""),
         config=types.GenerateContentConfig(
             response_mime_type="application/json",
             response_schema=Answer,

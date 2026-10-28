@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.db import init_db
 from app.rag.worker import Worker
-from app.routers import ask, documents
+from app.routers import ask, documents, graph
 
 
 @asynccontextmanager
@@ -27,3 +27,4 @@ app.add_middleware(
 )
 app.include_router(documents.router)
 app.include_router(ask.router)
+app.include_router(graph.router)

@@ -6,6 +6,8 @@ import numpy as np
 
 from app.db import connect
 from app.llm import embed, embed_model_key
+from app.rag import jobs
+from app.rag.graph_extract import delete_graph
 from app.rag.spans import Chunk, group_chunks, split_spans
 
 log = logging.getLogger(__name__)
@@ -31,8 +33,7 @@ def index_document(doc_id: str, pages: list[dict[str, Any]], generation: int) ->
         # Take the write lock before the generation check, so no save can commit between
         # the check and the swap.
         conn.execute("BEGIN IMMEDIATE")
-        current = conn.execute("SELECT generation FROM index_jobs WHERE doc_id = ?", (doc_id,)).fetchone()
-        if current is None or current["generation"] != generation:
+        if not jobs.is_current(conn, doc_id, generation):
             log.info("discarding stale index run for %s (generation %s)", doc_id, generation)
             return False
         _delete(conn, doc_id)
@@ -52,8 +53,15 @@ def index_document(doc_id: str, pages: list[dict[str, Any]], generation: int) ->
                     for s in chunk.spans
                 ],
             )
+        # The graph is built from these spans, so it is stale until stage extract finishes.
+        now = datetime.now(timezone.utc).isoformat()
         conn.execute(
-            "UPDATE documents SET indexed_at = ? WHERE id = ?", (datetime.now(timezone.utc).isoformat(), doc_id)
+            "UPDATE documents SET indexed_at = ?, graph_indexed_at = NULL WHERE id = ?", (now, doc_id)
+        )
+        conn.execute(
+            "UPDATE index_jobs SET stage = 'extract', status = 'pending', attempts = 0, error = NULL, "
+            "updated_at = ? WHERE doc_id = ?",
+            (now, doc_id),
         )
     return True
 
@@ -64,3 +72,4 @@ def _delete(conn: Any, doc_id: str) -> None:
     )
     conn.execute("DELETE FROM spans WHERE doc_id = ?", (doc_id,))
     conn.execute("DELETE FROM chunks WHERE doc_id = ?", (doc_id,))
+    delete_graph(conn, doc_id)

@@ -8,6 +8,9 @@ import httpx
 
 from app import db, llm
 from app.rag import jobs, query, worker
+from app.rag.graph_extract import ExtractedGraph
+from app.rag.graph_query import QuestionAnalysis
+from app.rag.graph_resolve import SameAnswer
 from app.routers import documents
 
 PAGES = [{"number": 1, "title": "Sheet 1", "markdown": "# Roads\n\nThe road closure resulted from the flooding.\n"}]
@@ -35,6 +38,18 @@ class TempDbTest(unittest.TestCase):
         env = mock.patch.dict("os.environ", {"OLLAMA_EMBED_MODEL": "qwen3-embedding", "OLLAMA_EMBED_DIM": "3"})
         env.start()
         self.addCleanup(env.stop)
+        # Stage extract calls the extraction model, the resolver embeds names and asks for
+        # same/different answers. Tests that need graph output patch these again.
+        for target, kwargs in [
+            ("app.rag.graph_extract.generate_json", {"return_value": ExtractedGraph(entities=[], relations=[])}),
+            ("app.rag.graph_resolve.embed", {"side_effect": fake_embed}),
+            ("app.rag.graph_resolve.generate_json", {"return_value": SameAnswer(decision="different")}),
+            ("app.rag.graph_query.embed", {"side_effect": fake_embed}),
+            ("app.rag.graph_query.generate_json", {"return_value": QuestionAnalysis(kind="other", entity="")}),
+        ]:
+            patcher = mock.patch(target, **kwargs)
+            patcher.start()
+            self.addCleanup(patcher.stop)
         db.init_db()
 
     def save_doc(self, doc_id: str = "doc1") -> str:
@@ -61,8 +76,9 @@ class WorkerTest(TempDbTest):
         jobs.enqueue([doc_id])
         worker.run_until_idle()
         status = jobs.status_of(doc_id)
-        self.assertEqual((status["stage"], status["status"]), ("embed", "done"))
+        self.assertEqual((status["stage"], status["status"]), ("extract", "done"))
         self.assertIsNotNone(status["indexed_at"])
+        self.assertIsNotNone(status["graph_indexed_at"])
         with db.connect() as conn:
             models = {r["embed_model"] for r in conn.execute("SELECT embed_model FROM chunks")}
         self.assertEqual(models, {"qwen3-embedding@3"})
@@ -92,6 +108,15 @@ class WorkerTest(TempDbTest):
         self.assertEqual(status["status"], "failed")
         self.assertIn("connection refused", status["error"])
         self.assertEqual(self.chunk_count(doc_id), before)
+
+    def test_document_list_carries_index_status(self, _embed: mock.Mock) -> None:
+        doc_id = self.save_doc()
+        jobs.enqueue([doc_id])
+        (row,) = documents.list_documents()
+        self.assertEqual(row["index_status"]["status"], "pending")
+        worker.run_until_idle()
+        (row,) = documents.list_documents()
+        self.assertEqual(row["index_status"]["status"], "done")
 
     def test_job_is_claimed_once(self, _embed: mock.Mock) -> None:
         jobs.enqueue([self.save_doc()])

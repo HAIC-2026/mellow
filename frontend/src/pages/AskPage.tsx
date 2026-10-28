@@ -1,6 +1,7 @@
 import { useState, type FormEvent } from 'react'
-import { ask, type AskResponse, type Citation } from '../api/client'
+import { ask, type AskResponse, type Citation, type GraphDebug } from '../api/client'
 import SourceViewer from './SourceViewer'
+import GraphCanvas, { type CanvasEdgeData } from '../components/GraphCanvas'
 import './AskPage.css'
 
 function formatJson(raw: string | null): string {
@@ -39,6 +40,33 @@ function groupKey(group: Citation[]): string {
   return group.map((c) => c.span_id).join(',')
 }
 
+// The kept chains and conflicts from debug.graph: what the answer was built from.
+function pathGraph(graph: GraphDebug | null | undefined) {
+  if (!graph || graph.paths.length === 0) return null
+  const byId = new Map(graph.assertions.map((a) => [a.id, a]))
+  const nodes = new Map<number, { id: number; name: string; type: string; size: number }>()
+  const edges = new Map<string, CanvasEdgeData>()
+  const addLink = (src: number, dst: number, srcName: string, dstName: string, type: string, negative: boolean) => {
+    nodes.set(src, { id: src, name: srcName, type: 'entity', size: 22 })
+    nodes.set(dst, { id: dst, name: dstName, type: 'entity', size: 22 })
+    const key = `${src}-${dst}-${type}-${negative ? 'neg' : 'pos'}`
+    edges.set(key, {
+      key, src, dst, label: type, causal: true, negative, conflict: false, review: false, width: 2,
+    })
+  }
+  for (const path of graph.paths) {
+    for (const link of path.links) {
+      const first = byId.get(link[0])
+      if (first) addLink(first.src, first.dst, first.src_name, first.dst_name, first.type, false)
+    }
+  }
+  for (const c of graph.conflicts) {
+    const first = byId.get(c.assertion_ids[0])
+    if (first) addLink(c.src, c.dst, first.src_name, first.dst_name, c.type, true)
+  }
+  return { nodes: [...nodes.values()], edges: [...edges.values()], centre: graph.target?.id }
+}
+
 function quote(group: Citation[]): string {
   return group.map((c) => c.text).join(' ')
 }
@@ -49,6 +77,7 @@ export default function AskPage() {
   const [selected, setSelected] = useState<Citation[] | null>(null)
   const [loading, setLoading] = useState(false)
   const [debug, setDebug] = useState(false)
+  const [showGraph, setShowGraph] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   async function submit(e: FormEvent) {
@@ -126,6 +155,19 @@ export default function AskPage() {
             )}
             {result.debug && (
               <div className="ask-debug">
+                {pathGraph(result.debug.graph) && (
+                  <details open>
+                    <summary>Graph ({result.debug.graph?.paths.length} chain(s), {result.debug.graph?.conflicts.length} conflict(s))</summary>
+                    <button onClick={() => setShowGraph((v) => !v)}>{showGraph ? 'Hide graph' : 'Show graph'}</button>
+                    {showGraph && (
+                      <GraphCanvas
+                        nodes={pathGraph(result.debug.graph)!.nodes}
+                        edges={pathGraph(result.debug.graph)!.edges}
+                        centreId={pathGraph(result.debug.graph)!.centre}
+                      />
+                    )}
+                  </details>
+                )}
                 <details open>
                   <summary>Chunks sent to the LLM ({result.debug.chunks.length})</summary>
                   {result.debug.chunks.map((c) => (

@@ -5,6 +5,7 @@ import numpy as np
 
 from app.db import connect
 from app.llm import answer_with_citations, embed, embed_model_key
+from app.rag import graph_query
 
 CANDIDATES = 20
 RRF_K = 60
@@ -18,16 +19,32 @@ STOPWORDS = frozenset(
 
 
 def ask(question: str, top_k: int = 8, debug: bool = False) -> dict[str, Any]:
+    analysis = graph_query.analyse(question)
+    targets = graph_query.resolve_targets(analysis.entity, question) if analysis.kind == "causes_of" else []
+
     with connect() as conn:
         keyword = _keyword_search(conn, question)
         vector = _vector_search(conn, question)
         ranked = _fuse([keyword, vector])[:top_k]
         spans = _spans_for(conn, ranked)
         debug_chunks = _debug_chunks(conn, ranked, keyword, vector) if debug else None
+        graph = graph_query.build(conn, analysis.kind, targets)
+        graph_debug = None
+        if debug:
+            target_info = graph_query.debug_targets(conn, targets)
+            graph_debug = graph.debug(target_info) if graph else {
+                "target": None, "targets": [], "question_kind": analysis.kind,
+                "assertions": [], "paths": [], "conflicts": [],
+            }
+
+    # Graph passages first: they are the chains the answer has to state.
+    if graph is not None:
+        seen = {s["span_id"] for s in graph.spans}
+        spans = graph.spans + [s for s in spans if s["span_id"] not in seen]
 
     def with_debug(result: dict[str, Any], passages: str | None, raw: str | None) -> dict[str, Any]:
         if debug:
-            result["debug"] = {"chunks": debug_chunks, "passages": passages, "raw_response": raw}
+            result["debug"] = {"chunks": debug_chunks, "passages": passages, "raw_response": raw, "graph": graph_debug}
         return result
 
     if not spans:
@@ -38,7 +55,7 @@ def ask(question: str, top_k: int = 8, debug: bool = False) -> dict[str, Any]:
         f"[{s['span_id']}] ({s['original_filename']} › {s['heading_path'] or s['page_title']}) {s['llm_text']}"
         for s in spans
     )
-    answer, raw = answer_with_citations(question, passages)
+    answer, raw = answer_with_citations(question, passages, graph.rules() if graph else "")
 
     # Only ids we sent count as citations; the LLM never supplies document names or quotes.
     by_id = {s["span_id"]: s for s in spans}

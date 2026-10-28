@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { getDocument, listDocuments, type DocumentDetail, type DocumentSummary } from '../api/client'
+import { describeIndex, INDEX_POLL_MS, isIndexing } from '../indexStatus'
 
 interface Props {
   onOpen: (doc: DocumentDetail) => void
@@ -12,6 +13,16 @@ export default function HistoryPage({ onOpen }: Props) {
   useEffect(() => {
     listDocuments().then(setDocs).catch((e: Error) => setError(e.message))
   }, [])
+
+  // Refresh while any document is still indexing, so its Index column moves on its own.
+  const anyIndexing = docs.some((d) => isIndexing(d.index_status))
+  useEffect(() => {
+    if (!anyIndexing) return
+    const timer = setInterval(() => {
+      listDocuments().then(setDocs).catch(() => {})
+    }, INDEX_POLL_MS)
+    return () => clearInterval(timer)
+  }, [anyIndexing])
 
   async function open(id: string) {
     try {
@@ -31,6 +42,7 @@ export default function HistoryPage({ onOpen }: Props) {
             <th>File</th>
             <th>Parser</th>
             <th>Status</th>
+            <th>Index</th>
             <th>Uploaded</th>
             <th>Saved</th>
           </tr>
@@ -41,6 +53,7 @@ export default function HistoryPage({ onOpen }: Props) {
               <td>{d.original_filename}</td>
               <td>{d.parser_name} {d.parser_version}</td>
               <td>{d.status}</td>
+              <td>{d.status === 'saved' ? describeIndex(d.index_status) : '-'}</td>
               <td>{d.uploaded_at}</td>
               <td>{d.saved_at ?? '-'}</td>
             </tr>

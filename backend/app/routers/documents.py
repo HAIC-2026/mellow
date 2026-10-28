@@ -189,7 +189,7 @@ def _insert(
 def list_documents() -> list[dict[str, Any]]:
     with connect() as conn:
         rows = conn.execute(f"SELECT {COLUMNS} FROM documents ORDER BY uploaded_at DESC").fetchall()
-    return [dict(row) for row in rows]
+    return [{**dict(row), "index_status": jobs.status_of(row["id"])} for row in rows]
 
 
 @router.get("/documents/{doc_id}")

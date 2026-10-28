@@ -3,6 +3,7 @@ import { diffLines, type Change } from "diff";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import "./ReviewPage.css";
+import { describeIndex, INDEX_POLL_MS, isIndexing } from "../indexStatus";
 import {
   getDocument,
   llmEditSheet,
@@ -11,19 +12,6 @@ import {
   type IndexStatus,
   type Page,
 } from "../api/client";
-
-const INDEX_POLL_MS = 2000;
-
-function isIndexing(status: IndexStatus | null): boolean {
-  return status?.status === "pending" || status?.status === "running";
-}
-
-function describeIndex(status: IndexStatus | null): string {
-  if (status === null) return "Not indexed";
-  if (status.status === "failed") return `Failed: ${status.error ?? "unknown error"}`;
-  if (status.status === "done") return "Ready";
-  return status.stage === "embed" ? "Indexing..." : "Extracting...";
-}
 
 interface Props {
   doc: DocumentDetail;
